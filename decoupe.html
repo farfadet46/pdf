@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<!-- page decoupe.html -->
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Découper des PDF — Offline</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav style="position:sticky; top:0; z-index:1000; background:var(--panel); backdrop-filter:blur(8px); border-bottom:1px solid rgba(255,255,255,.06); padding:10px 20px; display:flex; gap:12px; justify-content:center;">
+  <a href="fusion.html" class="btn btn-ghost">Fusion</a>
+  <a href="decoupe.html" class="btn btn-ghost">Découpage</a>
+  <a href="index.html" class="btn btn-ghost">Accueil</a>
+</nav>
+  <header>
+    <h1>Découper des PDF</h1>
+    <p class="sub">Chargez un PDF, choisissez les pages à extraire, et cliquez sur « Découper ».</p>
+  </header>
+
+  <div class="container">
+    <div class="grid">
+      <section class="card">
+        <div id="drop" class="dropzone">
+          <p><strong>Déposez votre PDF ici</strong> ou</p>
+          <p><label class="btn btn-ghost tooltip" for="picker">Choisir un fichier
+				<span class="tooltiptext">Selectionner un PDF pour le découper</span>
+			</label></p>
+          <input id="picker" type="file" accept="application/pdf" hidden />
+        </div>
+
+        <div class="files" id="fileInfo"></div>
+
+        <div style="margin-top:14px;">
+		  <label>Pages à extraire (ex: 1-3,5,7-9) :</label>
+		  <input id="pages" type="text" placeholder="1-3,5,7-9"
+				 style="width:100%; padding:8px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.06); color:var(--text); margin-top:8px;">
+		</div>
+
+        <div style="margin-top:14px; display:flex; gap:8px; align-items:center;">
+          <button id="extract" class="btn-accent tooltip">Découper →
+			<span class="tooltiptext">Découper les PDF</span>
+		  </button>
+		  <button id="reset" class="btn tooltip" style="margin-left:10px;">Réinitialiser
+			<span class="tooltiptext">Réinitialiser les infos</span>
+		  </button>
+
+        </div>
+
+        <p id="status" class="hint" style="margin-top:10px;"></p>
+      </section>
+
+      <aside class="card">
+        <details open>
+          <summary>Fonctionnement</summary>
+          <ul>
+			<li>Tout se passe dans votre navigateur : aucune donnée ne quitte votre appareil.</li>
+			<li>Les PDF protégés par mot de passe ne sont pas pris en charge.</li>
+			
+            <li>Saisissez les pages à extraire sous forme de plages comme pour une impression (ex : 2-5,7).</li>
+				<ul>
+					<li>le tiret `-` englobe les pages</li>
+					<li>La virgule `,` sépare les pages</li>
+				</ul>
+          </ul>
+        </details>
+        <details style="margin-top:10px;">
+          <summary>Informations</summary>
+          <p>
+			Vous avez des remarques ou des idées d’amélioration ?  
+			Écrivez-moi : <a href="mailto:farfadet46@gmail.com">@farfadet46</a>.
+		  </p>
+        </details>
+      </aside>
+    </div>
+	
+	<div id="popup" class="popup">
+	  <p id="popup-text"></p>
+	  <button id="popup-close" class="btn btn-accent">OK</button>
+	</div>
+	
+    <footer>Fait avec <span aria-hidden="true">🤍</span> par <a href="mailto:farfadet46@gmail.com">@farfadet46</a>.
+</footer>
+  </div>
+
+	<script src="pdf-lib.min.js"></script>
+	<script>
+	const picker = document.getElementById('picker');
+	const drop = document.getElementById('drop');
+	const fileInfo = document.getElementById('fileInfo');
+	const extractBtn = document.getElementById('extract');
+	const pagesInput = document.getElementById('pages');
+	const status = document.getElementById('status');
+
+	let file = null;
+
+	// Affichage du fichier sélectionné
+	function showFileInfo(f) {
+	  fileInfo.innerHTML = '';
+	  if (!f) {
+		fileInfo.innerHTML = '<p class="hint">Aucun fichier sélectionné.</p>';
+		return;
+	  }
+	  fileInfo.innerHTML = `<div class="file">📄 ${f.name} <span class="hint">(${Math.round(f.size/1024)} Ko)</span></div>`;
+	}
+
+	// Gestion sélection / drag & drop
+	picker.addEventListener('change', e => { file = e.target.files[0]; showFileInfo(file); });
+
+	['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('drag'); }));
+	['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('drag'); }));
+	drop.addEventListener('drop', e => { file = e.dataTransfer.files[0]; showFileInfo(file); });
+
+	// Parsing d'une seule liste de pages (1-3,5)
+	function parsePages(str, max) {
+	  const parts = str.split(',');
+	  const pages = [];
+	  for (const part of parts) {
+		if (part.includes('-')) {
+		  let [start,end] = part.split('-').map(n=>parseInt(n,10));
+		  for (let i=start;i<=end;i++) if(i>=1 && i<=max) pages.push(i-1);
+		} else {
+		  const num = parseInt(part,10);
+		  if (!isNaN(num) && num>=1 && num<=max) pages.push(num-1);
+		}
+	  }
+	  return pages;
+	}
+
+	// Parsing multiple lists séparées par ;
+	function parseMultiple(str, max) {
+	  const lists = str.split(';').map(s => s.trim()).filter(s => s.length > 0);
+	  return lists.map(list => parsePages(list, max));
+	}
+
+	// Extraction
+	extractBtn.addEventListener('click', async () => {
+	  if (!file) {
+		showPopup("Choisissez un fichier PDF");
+		return;
+      }
+	  const bytes = await file.arrayBuffer();
+
+	  try {
+		const { PDFDocument } = PDFLib;
+		const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption:true });
+
+		const multiLists = parseMultiple(pagesInput.value, pdfDoc.getPageCount());
+		if (!multiLists.length) {
+			showPopup("Aucune plage valide.");
+			return;
+		}
+
+		let exportedCount = 0;
+
+		for (let i=0;i<multiLists.length;i++) {
+		  const indices = multiLists[i];
+		  if (!indices.length) continue;
+
+		  const newDoc = await PDFDocument.create();
+		  const copied = await newDoc.copyPages(pdfDoc, indices);
+		  copied.forEach(p => newDoc.addPage(p));
+
+		  const outBytes = await newDoc.save();
+		  const blob = new Blob([outBytes], { type: "application/pdf" });
+
+		  const a = document.createElement('a');
+		  a.href = URL.createObjectURL(blob);
+		  a.download = `extrait_${i+1}.pdf`;
+		  document.body.appendChild(a);
+		  a.click();
+		  a.remove();
+		  URL.revokeObjectURL(a.href);
+
+		  exportedCount++;
+		}
+		
+		showPopup(`${exportedCount} fichier(s) PDF exporté(s) avec succès !`);
+	  } catch (e) {
+		console.error(e);
+		alert("Erreur : " + e.message);
+	  }
+	});
+
+	const resetBtn = document.getElementById('reset');
+
+	resetBtn.addEventListener('click', () => {
+	  file = null;
+	  picker.value = null;           // réinitialise l'input fichier
+	  pagesInput.value = '';         // vide le champ pages
+	  status.textContent = '';       // vide le statut
+	  fileInfo.innerHTML = '<p class="hint">Aucun fichier sélectionné.</p>'; // réaffiche le message
+	});
+	
+	const popup = document.getElementById('popup');
+	const popupText = document.getElementById('popup-text');
+	const popupClose = document.getElementById('popup-close');
+
+	function showPopup(message) {
+	  popupText.textContent = message;
+	  popup.style.display = 'block';
+	}
+
+	popupClose.addEventListener('click', () => {
+	  popup.style.display = 'none';
+	});
+	
+	showFileInfo(null);
+	</script>
+</body>
+</html>
